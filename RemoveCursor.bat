@@ -26,11 +26,18 @@ if %errorLevel% == 0 (
     exit /b 1
 )
 
+set /p autoenter=Enable auto-continue at prompts? (Y/N): 
+echo.
+
 echo Starting Cursor removal process...
 echo.
 
 REM Run the PowerShell script
-powershell.exe -ExecutionPolicy Bypass -File "%~dp0CursorCompleteRemoval.ps1" -SkipConfirmation
+if /i "%autoenter%" == "Y" (
+    powershell.exe -ExecutionPolicy Bypass -File "%~dp0CursorCompleteRemoval.ps1" -SkipConfirmation -AutoEnter
+) else (
+    powershell.exe -ExecutionPolicy Bypass -File "%~dp0CursorCompleteRemoval.ps1" -SkipConfirmation
+)
 
 echo.
 echo ========================================

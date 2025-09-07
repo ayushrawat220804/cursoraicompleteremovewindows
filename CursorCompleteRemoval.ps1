@@ -4,7 +4,8 @@
 
 param(
     [switch]$Force,
-    [switch]$SkipConfirmation
+    [switch]$SkipConfirmation,
+    [switch]$AutoEnter
 )
 
 # Set execution policy for this session
@@ -27,6 +28,54 @@ function Write-Warning { Write-ColorOutput Yellow $args }
 function Write-Error { Write-ColorOutput Red $args }
 function Write-Info { Write-ColorOutput Cyan $args }
 
+# Progress indicator function
+function Write-Progress-Custom {
+    param (
+        [int]$StepNumber,
+        [int]$TotalSteps,
+        [string]$StepName
+    )
+    
+    $percentage = [math]::Round(($StepNumber / $TotalSteps) * 100)
+    $progressBar = "["
+    $barLength = 30
+    $filledLength = [math]::Round(($percentage / 100) * $barLength)
+    
+    for ($i = 0; $i -lt $barLength; $i++) {
+        if ($i -lt $filledLength) {
+            $progressBar += "#"
+        } else {
+            $progressBar += "-"
+        }
+    }
+    
+    $progressBar += "] $percentage%"
+    
+    Write-Host ""
+    Write-Host "$progressBar" -ForegroundColor Yellow
+    Write-Info "Step $StepNumber of $TotalSteps`: $StepName"
+    Write-Host ""
+}
+
+# Pause function with auto-continue option
+function Pause-Script {
+    param (
+        [string]$Message = "Press any key to continue...",
+        [int]$AutoContinueAfterSeconds = 0
+    )
+    
+    if ($AutoEnter -or $SkipConfirmation) {
+        if ($AutoContinueAfterSeconds -gt 0) {
+            Write-Host "$Message (Auto-continuing in $AutoContinueAfterSeconds seconds)" -ForegroundColor Yellow
+            Start-Sleep -Seconds $AutoContinueAfterSeconds
+        }
+        return
+    }
+    
+    Write-Host "$Message" -ForegroundColor Yellow
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+}
+
 # Check if running as Administrator
 function Test-Administrator {
     $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -46,19 +95,24 @@ function Remove-CursorCompletely {
         return
     }
 
-    if (-not $SkipConfirmation) {
+    if (-not $SkipConfirmation -and -not $AutoEnter) {
         $confirmation = Read-Host "Are you sure you want to completely remove Cursor? (y/N)"
         if ($confirmation -ne 'y' -and $confirmation -ne 'Y') {
             Write-Info "Operation cancelled by user"
             return
         }
+    } elseif ($AutoEnter) {
+        Write-Info "Auto-confirmation enabled. Proceeding with removal..."
     }
 
     Write-Info "Starting Cursor removal process..."
     Write-Info ""
+    
+    # Define total steps for progress tracking
+    $totalSteps = 17
 
     # 1. Stop Cursor processes
-    Write-Info "1. Stopping Cursor processes..."
+    Write-Progress-Custom -StepNumber 1 -TotalSteps $totalSteps -StepName "Stopping Cursor processes"
     try {
         Get-Process -Name "*cursor*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
         Get-Process -Name "*code*" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*cursor*" } | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -66,9 +120,10 @@ function Remove-CursorCompletely {
     } catch {
         Write-Warning "Some processes may not have been stopped: $($_.Exception.Message)"
     }
+    Pause-Script -Message "Processes stopped. Press any key to continue..." -AutoContinueAfterSeconds 2
 
     # 2. Uninstall Cursor application
-    Write-Info "2. Uninstalling Cursor application..."
+    Write-Progress-Custom -StepNumber 2 -TotalSteps $totalSteps -StepName "Uninstalling Cursor application"
     $uninstallKeys = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
         "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
@@ -83,8 +138,10 @@ function Remove-CursorCompletely {
         $cursorUninstallers += $apps
     }
 
+    $uninstallerCount = 0
     foreach ($app in $cursorUninstallers) {
         if ($app.UninstallString) {
+            $uninstallerCount++
             Write-Info "Found Cursor installer: $($app.DisplayName)"
             $uninstallString = $app.UninstallString
             if ($uninstallString -like "*msiexec*") {
@@ -95,36 +152,110 @@ function Remove-CursorCompletely {
             }
         }
     }
-    Write-Success "Cursor application uninstalled"
+    
+    if ($uninstallerCount -eq 0) {
+        Write-Info "No Cursor uninstallers found in registry"
+    } else {
+        Write-Success "Cursor application uninstalled"
+    }
+    Pause-Script -Message "Uninstallation complete. Press any key to continue..." -AutoContinueAfterSeconds 2
 
     # 3. Remove Cursor directories
-    Write-Info "3. Removing Cursor directories..."
+    Write-Progress-Custom -StepNumber 3 -TotalSteps $totalSteps -StepName "Removing Cursor directories"
+    
+    # Define exclusions for setup files and other applications
+    $setupExclusions = @(
+        "*CursorSetup*",
+        "*cursor_setup*",
+        "*cursor-setup*",
+        "*cursor_download*",
+        "*cursor-download*",
+        "*cursor-installer*"
+    )
+    
     $cursorPaths = @(
         "$env:LOCALAPPDATA\Programs\cursor",
         "$env:APPDATA\cursor",
         "$env:LOCALAPPDATA\cursor",
+        "$env:LOCALAPPDATA\cursor-updater",
         "$env:PROGRAMFILES\cursor",
         "$env:PROGRAMFILES(X86)\cursor",
         "$env:USERPROFILE\.cursor",
         "$env:USERPROFILE\AppData\Roaming\cursor",
-        "$env:USERPROFILE\AppData\Local\cursor",
-        "$env:TEMP\cursor*",
-        "$env:TEMP\*cursor*"
+        "$env:USERPROFILE\AppData\Local\cursor"
+        # Removed wildcard paths that could affect other files
     )
 
+    $removedCount = 0
     foreach ($path in $cursorPaths) {
         if (Test-Path $path) {
-            try {
-                Remove-Item -Path $path -Recurse -Force -ErrorAction SilentlyContinue
-                Write-Success "Removed: $path"
-            } catch {
-                Write-Warning "Could not remove: $path - $($_.Exception.Message)"
+            # Check if this is the current script's directory
+            $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
+            if ($path -eq $scriptPath) {
+                Write-Warning "Skipping removal of script directory: $path"
+                continue
+            }
+            
+            # Skip setup files
+            $isSetupFile = $false
+            foreach ($exclusion in $setupExclusions) {
+                if ($path -like $exclusion) {
+                    $isSetupFile = $true
+                    Write-Info "Skipping setup file: $path"
+                    break
+                }
+            }
+            
+            if (-not $isSetupFile) {
+                $removedCount++
+                try {
+                    Remove-Item -Path $path -Recurse -Force -ErrorAction SilentlyContinue
+                    Write-Success "Removed: $path"
+                } catch {
+                    Write-Warning "Could not remove: $path - $($_.Exception.Message)"
+                }
             }
         }
     }
+    
+    # Clean temporary files with more specific patterns
+    $tempPatterns = @(
+        "$env:TEMP\cursor-app-*",
+        "$env:TEMP\cursor-updater-*"
+    )
+    
+    foreach ($pattern in $tempPatterns) {
+        Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | ForEach-Object {
+            # Skip setup files
+            $isSetupFile = $false
+            foreach ($exclusion in $setupExclusions) {
+                if ($_.FullName -like $exclusion) {
+                    $isSetupFile = $true
+                    Write-Info "Skipping setup file: $($_.FullName)"
+                    break
+                }
+            }
+            
+            if (-not $isSetupFile) {
+                try {
+                    Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                    Write-Success "Removed temp file: $($_.FullName)"
+                } catch {
+                    Write-Warning "Could not remove temp file: $($_.FullName) - $($_.Exception.Message)"
+                }
+            }
+        }
+    }
+    
+    if ($removedCount -eq 0) {
+        Write-Info "No Cursor directories found"
+    } else {
+        Write-Success "$removedCount Cursor directories removed"
+    }
+    Pause-Script -Message "Directory removal complete. Press any key to continue..." -AutoContinueAfterSeconds 2
 
     # 4. Clean Registry entries
-    Write-Info "4. Cleaning Registry entries..."
+    Write-Progress-Custom -StepNumber 4 -TotalSteps $totalSteps -StepName "Cleaning Registry entries"
     $registryPaths = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*cursor*",
         "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*cursor*",
@@ -181,9 +312,10 @@ function Remove-CursorCompletely {
     }
 
     Write-Success "Registry cleaned"
+    Pause-Script -Message "Registry cleaning complete. Press any key to continue..." -AutoContinueAfterSeconds 2
 
     # 5. Remove Start Menu and Desktop shortcuts
-    Write-Info "5. Removing shortcuts..."
+    Write-Progress-Custom -StepNumber 5 -TotalSteps $totalSteps -StepName "Removing shortcuts"
     $shortcutPaths = @(
         "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\*cursor*",
         "$env:ALLUSERSPROFILE\Microsoft\Windows\Start Menu\Programs\*cursor*",
@@ -195,9 +327,10 @@ function Remove-CursorCompletely {
         Get-ChildItem -Path (Split-Path $shortcutPath -Parent) -ErrorAction SilentlyContinue | Where-Object { $_.Name -like (Split-Path $shortcutPath -Leaf) } | Remove-Item -Force -ErrorAction SilentlyContinue
     }
     Write-Success "Shortcuts removed"
+    Pause-Script -Message "Shortcut removal complete. Press any key to continue..." -AutoContinueAfterSeconds 2
 
     # 6. Clean environment variables
-    Write-Info "6. Cleaning environment variables..."
+    Write-Progress-Custom -StepNumber 6 -TotalSteps $totalSteps -StepName "Cleaning environment variables"
     $envVars = @("CURSOR_*", "*CURSOR*")
     foreach ($envVar in $envVars) {
         try {
@@ -214,8 +347,10 @@ function Remove-CursorCompletely {
         }
     }
 
+    Pause-Script -Message "Environment variable cleaning complete. Press any key to continue..." -AutoContinueAfterSeconds 2
+
     # 7. Clean browser data
-    Write-Info "7. Cleaning browser data..."
+    Write-Progress-Custom -StepNumber 7 -TotalSteps $totalSteps -StepName "Cleaning browser data"
     $browserPaths = @(
         "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Local Storage\*cursor*",
         "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Session Storage\*cursor*",
@@ -228,9 +363,10 @@ function Remove-CursorCompletely {
         Get-ChildItem -Path (Split-Path $browserPath -Parent) -ErrorAction SilentlyContinue | Where-Object { $_.Name -like (Split-Path $browserPath -Leaf) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     }
     Write-Success "Browser data cleaned"
+    Pause-Script -Message "Browser data cleaning complete. Press any key to continue..." -AutoContinueAfterSeconds 2
 
     # 8. Reset DNS cache
-    Write-Info "8. Resetting DNS cache..."
+    Write-Progress-Custom -StepNumber 8 -TotalSteps $totalSteps -StepName "Resetting DNS cache"
     try {
         ipconfig /flushdns | Out-Null
         Write-Success "DNS cache flushed"
@@ -238,8 +374,10 @@ function Remove-CursorCompletely {
         Write-Warning "Could not flush DNS cache: $($_.Exception.Message)"
     }
 
+    Pause-Script -Message "DNS cache reset complete. Press any key to continue..." -AutoContinueAfterSeconds 2
+
     # 9. Clean temporary files
-    Write-Info "9. Cleaning temporary files..."
+    Write-Progress-Custom -StepNumber 9 -TotalSteps $totalSteps -StepName "Cleaning temporary files"
     $tempPaths = @(
         "$env:TEMP\*cursor*",
         "$env:TEMP\cursor*",
@@ -257,9 +395,10 @@ function Remove-CursorCompletely {
     } catch { }
 
     Write-Success "Temporary files cleaned"
+    Pause-Script -Message "Temporary files cleaning complete. Press any key to continue..." -AutoContinueAfterSeconds 2
 
     # 10. Remove from Windows Services
-    Write-Info "10. Checking Windows Services..."
+    Write-Progress-Custom -StepNumber 10 -TotalSteps $totalSteps -StepName "Checking Windows Services"
     try {
         $services = Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*cursor*" -or $_.DisplayName -like "*cursor*" }
         foreach ($service in $services) {
@@ -272,8 +411,10 @@ function Remove-CursorCompletely {
         Write-Warning "Could not check services: $($_.Exception.Message)"
     }
 
+    Pause-Script -Message "Windows Services check complete. Press any key to continue..." -AutoContinueAfterSeconds 2
+
     # 11. Remove from Scheduled Tasks
-    Write-Info "11. Checking Scheduled Tasks..."
+    Write-Progress-Custom -StepNumber 11 -TotalSteps $totalSteps -StepName "Checking Scheduled Tasks"
     try {
         $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -like "*cursor*" -or $_.Description -like "*cursor*" }
         foreach ($task in $tasks) {
@@ -284,9 +425,11 @@ function Remove-CursorCompletely {
         Write-Warning "Could not check scheduled tasks: $($_.Exception.Message)"
     }
 
+    Pause-Script -Message "Scheduled Tasks check complete. Press any key to continue..." -AutoContinueAfterSeconds 2
+
     # 12. Clean Windows Event Logs (optional)
     if ($Force) {
-        Write-Info "12. Cleaning Windows Event Logs..."
+        Write-Progress-Custom -StepNumber 12 -TotalSteps $totalSteps -StepName "Cleaning Windows Event Logs"
         try {
             $logs = @("Application", "System", "Setup")
             foreach ($log in $logs) {
@@ -300,8 +443,10 @@ function Remove-CursorCompletely {
         }
     }
 
+    Pause-Script -Message "Event logs check complete. Press any key to continue..." -AutoContinueAfterSeconds 2
+
     # 13. Deep scan and cleanup (inspired by Geek Uninstaller)
-    Write-Info "13. Performing deep scan and cleanup..."
+    Write-Progress-Custom -StepNumber 13 -TotalSteps $totalSteps -StepName "Performing deep scan and cleanup"
     
     # Clean file associations
     try {
@@ -323,26 +468,177 @@ function Remove-CursorCompletely {
     # Deep scan for any remaining Cursor references (Geek Uninstaller style)
     Write-Info "Performing deep scan for remaining Cursor references..."
     
-    # Scan all drives for Cursor references
+    # Scan all drives for Cursor references - with optimization to prevent getting stuck
     $drives = Get-WmiObject -Class Win32_LogicalDisk | Where-Object { $_.DriveType -eq 3 -and $_.Size -gt 0 }
+    
+    # Add confirmation for deep scan
+    $performDeepScan = $true
+    if (-not $SkipConfirmation -and -not $AutoEnter) {
+        $deepScanConfirm = Read-Host "Do you want to perform a deep scan for Cursor files? This will NOT affect other applications (Y/N)"
+        $performDeepScan = $deepScanConfirm -eq "Y" -or $deepScanConfirm -eq "y"
+    }
+    
+    if (-not $performDeepScan) {
+        Write-Info "Deep scan skipped by user."
+        return
+    }
+    
+    # Define common system folders to exclude for faster scanning
+    $excludeFolders = @(
+        "*System Volume Information*",
+        "*$Recycle.Bin*",
+        "*Windows*",
+        "*Program Files*",
+        "*Program Files (x86)*",
+        "*ProgramData*",
+        "*node_modules*",
+        "*git*",
+        "*Downloads*\*CursorSetup*",
+        "*Downloads*\*cursor_setup*",
+        "*Downloads*\*cursor-setup*",
+        "*Downloads*\*cursor_download*",
+        "*Downloads*\*cursor-download*",
+        "*Downloads*\*cursor-installer*",
+        # Skip folders that might have cursor in name but aren't related to the app
+        "*mr aptitudeguy*",
+        "*cursor projects*",
+        "*cursor files*",
+        # Exclude the script itself
+        $PSCommandPath
+    )
+    
+    # Define cursor-specific patterns to ensure we only target Cursor app files
+    $cursorSpecificPatterns = @(
+        "*\cursor\*",
+        "*\Cursor\*",
+        "*\cursor-updater\*",
+        "*\Cursor-updater\*",
+        "*\AppData\Local\Programs\cursor\*",
+        "*\AppData\Local\cursor\*",
+        "*\AppData\Roaming\cursor\*",
+        "*cursor.exe",
+        "*Cursor.exe",
+        "*cursor-updater.exe",
+        "*CursorSetup*.exe"
+    )
+    
+    # Define specific patterns to look for to avoid affecting other applications
+    $cursorSpecificPatterns = @(
+        "*\cursor.exe",
+        "*\cursor-updater.exe",
+        "*\cursor-node.exe",
+        "*\cursor-gpu-helper.exe",
+        "*\cursor-crash-handler.exe",
+        "*\Cursor AI*",
+        "*\Cursor.lnk",
+        "*\cursor\*"
+    )
+    
+    # Define max search time per drive to prevent getting stuck
+    $maxSearchTimePerDrive = 120 # seconds
+    
     foreach ($drive in $drives) {
         $driveLetter = $drive.DeviceID
+        Write-Info "Scanning drive $driveLetter for Cursor files..."
+        
+        # Create a timer to prevent getting stuck
+        $timer = [System.Diagnostics.Stopwatch]::StartNew()
+        
         try {
-            # Search for files containing "cursor" in name
-            Get-ChildItem -Path $driveLetter -Recurse -ErrorAction SilentlyContinue | Where-Object { 
-                $_.Name -like "*cursor*" -and $_.FullName -notlike "*System Volume Information*" -and $_.FullName -notlike "*$Recycle.Bin*"
-            } | ForEach-Object {
+            # First check common user locations where Cursor might be installed
+            $commonLocations = @(
+                "$driveLetter\Users\*\AppData\Local\Programs\cursor",
+                "$driveLetter\Users\*\AppData\Roaming\cursor",
+                "$driveLetter\Users\*\AppData\Local\cursor",
+                "$driveLetter\Users\*\AppData\Local\cursor-updater",
+                "$driveLetter\Users\*\.cursor"
+            )
+            
+            foreach ($location in $commonLocations) {
+                if ($timer.Elapsed.TotalSeconds -gt $maxSearchTimePerDrive) {
+                    Write-Warning "Search time limit reached for drive $driveLetter. Moving to next drive."
+                    break
+                }
+                
                 try {
-                    Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
-                    Write-Success "Deep scan removed: $($_.FullName)"
+                    Get-ChildItem -Path $location -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+                        # Skip excluded folders
+                        $skipFile = $false
+                        
+                        # Check if this is the current script's directory
+                        $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
+                        if ($_.FullName -eq $scriptPath -or $_.FullName -like "$scriptPath\*") {
+                            $skipFile = $true
+                        }
+                        
+                        # Check against exclusion list
+                        if (-not $skipFile) {
+                            foreach ($exclude in $excludeFolders) {
+                                if ($_.FullName -like $exclude) {
+                                    $skipFile = $true
+                                    break
+                                }
+                            }
+                        }
+                        
+                        # Skip setup files
+                        if (-not $skipFile) {
+                            foreach ($exclusion in $setupExclusions) {
+                                if ($_.FullName -like $exclusion) {
+                                    $skipFile = $true
+                                    Write-Info "Skipping setup file: $($_.FullName)"
+                                    break
+                                }
+                            }
+                        }
+                        
+                        if (-not $skipFile) {
+                            # Only remove files that match cursor specific patterns
+                            $isCursorFile = $false
+                            
+                            # Check if it's a cursor-specific file
+                            foreach ($pattern in $cursorSpecificPatterns) {
+                                if ($_.FullName -like $pattern) {
+                                    $isCursorFile = $true
+                                    break
+                                }
+                            }
+                            
+                            # Additional check for folder names that might contain "cursor" but are not related
+                            # This prevents affecting folders like "mr aptitudeguy" mentioned by the user
+                            if (-not $isCursorFile -and $_.PSIsContainer) {
+                                $folderName = $_.Name.ToLower()
+                                if ($folderName -eq "cursor" -or $folderName -eq "cursor-updater") {
+                                    $isCursorFile = $true
+                                }
+                            }
+                            
+                            if ($isCursorFile) {
+                                try {
+                                    Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                                    Write-Success "Deep scan removed: $($_.FullName)"
+                                } catch {
+                                    Write-Warning "Could not remove: $($_.FullName)"
+                                }
+                            } else {
+                                Write-Info "Skipping non-Cursor file: $($_.FullName)"
+                            }
+                        }
+                    }
                 } catch {
-                    Write-Warning "Could not remove: $($_.FullName)"
+                    # Skip inaccessible locations
                 }
             }
         } catch {
             # Skip inaccessible drives
+            Write-Warning "Could not access drive $driveLetter`: $($_.Exception.Message)"
         }
+        
+        $timer.Stop()
+        Write-Info "Completed scanning drive $driveLetter in $($timer.Elapsed.TotalSeconds) seconds"
     }
+    
+    Pause-Script -Message "Deep scan complete. Press any key to continue..." -AutoContinueAfterSeconds 3
 
     # Clean Windows Installer cache
     try {
@@ -481,7 +777,7 @@ function Remove-CursorCompletely {
     Write-Success "Deep scan and cleanup completed"
 
     # 14. Advanced cleanup (Geek Uninstaller inspired)
-    Write-Info "14. Performing advanced cleanup..."
+    Write-Progress-Custom -StepNumber 14 -TotalSteps $totalSteps -StepName "Performing advanced cleanup"
     
     # Clean Windows Event Logs for Cursor entries
     try {
@@ -565,9 +861,10 @@ function Remove-CursorCompletely {
     } catch { }
 
     Write-Success "Advanced cleanup completed"
+    Pause-Script -Message "Advanced cleanup complete. Press any key to continue..." -AutoContinueAfterSeconds 2
 
     # 15. Machine ID regeneration (from installation guide)
-    Write-Info "15. Regenerating Machine ID..."
+    Write-Progress-Custom -StepNumber 15 -TotalSteps $totalSteps -StepName "Regenerating Machine ID"
     try {
         # Generate new MachineGuid
         $newMachineGuid = [guid]::NewGuid().ToString()
@@ -589,8 +886,10 @@ function Remove-CursorCompletely {
         Write-Warning "Could not update Machine ID: $($_.Exception.Message)"
     }
 
+    Pause-Script -Message "Machine ID regeneration complete. Press any key to continue..." -AutoContinueAfterSeconds 2
+
     # 16. Additional Cursor-specific cleanup (from installation guide)
-    Write-Info "16. Performing Cursor-specific cleanup..."
+    Write-Progress-Custom -StepNumber 16 -TotalSteps $totalSteps -StepName "Performing Cursor-specific cleanup"
     
     # Clean Cursor updater specifically
     try {
@@ -657,9 +956,10 @@ function Remove-CursorCompletely {
     } catch { }
 
     Write-Success "Cursor-specific cleanup completed"
+    Pause-Script -Message "Cursor-specific cleanup complete. Press any key to continue..." -AutoContinueAfterSeconds 2
 
     # 17. Restart Windows Explorer to refresh the system
-    Write-Info "17. Refreshing Windows Explorer..."
+    Write-Progress-Custom -StepNumber 17 -TotalSteps $totalSteps -StepName "Refreshing Windows Explorer"
     try {
         Stop-Process -Name "explorer" -Force -ErrorAction SilentlyContinue
         Start-Process "explorer.exe"
@@ -710,8 +1010,12 @@ function Remove-CursorCompletely {
 # Run the removal process
 Remove-CursorCompletely
 
-# Pause to show results
-if (-not $SkipConfirmation) {
-    Write-Info "Press any key to exit..."
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-}
+# Final pause to show results
+Write-Info ""
+Write-Success "=== Cursor Complete Removal Tool Finished ==="
+Write-Info "All steps have been completed successfully."
+Write-Info ""
+
+# Always pause at the end regardless of SkipConfirmation to show the final results
+Write-Info "Press any key to exit..."
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")

@@ -6,6 +6,18 @@ This tool completely removes Cursor from your Windows 11 system, ensuring a fres
 
 This enhanced removal tool combines the deep scanning approach of [Geek Uninstaller](https://geekuninstaller.com/) with Cursor-specific cleanup methods. The removal process includes:
 
+## Features
+
+- **Application Uninstallation**: Properly uninstalls Cursor using Windows uninstaller and removes any leftover processes
+- **File System Cleanup**: Removes all Cursor directories and files from common locations
+- **Registry Deep Clean**: Thoroughly cleans registry entries related to Cursor
+- **System Integration Cleanup**: Removes shortcuts, environment variables, and other system integrations
+- **Advanced Data Cleanup**: Cleans browser data, DNS cache, and other advanced areas where Cursor might leave traces
+- **Progress Indicators**: Shows real-time progress of each step during the removal process
+- **Auto-Continue Option**: Automatically continues after pauses at key steps (optional)
+- **Optimized Deep Scan**: Prevents the script from getting stuck by using time limits and exclusions
+- **Interactive Pauses**: Pauses at key steps to show progress with auto-continue capability
+
 ### 1. Application Uninstallation
 - Stops all running Cursor processes
 - Uninstalls Cursor application using Windows uninstaller
@@ -69,6 +81,36 @@ This enhanced removal tool combines the deep scanning approach of [Geek Uninstal
 ### 9. System Refresh
 - Refreshes Windows Explorer
 - Ensures all changes take effect
+
+## Usage
+
+1. Close all instances of Cursor AI
+2. Run `RemoveCursor.bat` as Administrator
+3. Choose whether to enable auto-continue at prompts
+4. Follow the on-screen prompts and view progress indicators
+5. Review the final summary at the end
+
+## What It Cleans
+
+- Cursor application files
+- Registry entries
+- Start menu and desktop shortcuts
+- Environment variables
+- Browser data related to Cursor
+- System services and scheduled tasks
+- Windows Event Logs (optional)
+- File associations
+- Windows Search index entries
+- Windows Installer cache
+- And much more...
+
+## New Improvements
+
+- **Visual Progress Tracking**: See exactly which step is being executed and overall progress
+- **Smart Pauses**: Script pauses at key points to show progress with optional auto-continue
+- **Optimized Deep Scan**: Prevents getting stuck by using time limits and excluding system folders
+- **Auto-Enter Mode**: Option to automatically continue through all prompts
+- **Enhanced Final Summary**: Clear indication when all steps are complete
 
 ## How to Use
 
